@@ -104,6 +104,17 @@ def save_results(data: dict, filepath: str):
     """Save results as JSON (converting numpy arrays to lists)."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
+    def convert_key(key):
+        if isinstance(key, np.integer):
+            return int(key)
+        if isinstance(key, np.floating):
+            return float(key)
+        if isinstance(key, (str, int, float, bool)) or key is None:
+            return key
+        if isinstance(key, tuple):
+            return f"tuple:{json.dumps([convert(v) for v in key])}"
+        return str(key)
+
     def convert(obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -112,7 +123,7 @@ def save_results(data: dict, filepath: str):
         if isinstance(obj, np.floating):
             return float(obj)
         if isinstance(obj, dict):
-            return {k: convert(v) for k, v in obj.items()}
+            return {convert_key(k): convert(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [convert(v) for v in obj]
         return obj
