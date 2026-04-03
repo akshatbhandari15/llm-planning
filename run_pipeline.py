@@ -38,6 +38,13 @@ from src.utils import (
     set_seed, setup_logging, save_results,
     FACTUAL_PROMPTS, NARRATIVE_PROMPTS,
 )
+from src.improved_prompts import (
+    CONTEXTUAL_RAMP_PROMPTS,
+    LONG_RANGE_PROMPTS,
+    STRUCTURED_NARRATIVE_PROMPTS,
+    GARDEN_PATH_PROMPTS,
+    RECOMMENDED_PARAMS,
+)
 from configs.default_config import PipelineConfig
 
 
@@ -51,20 +58,20 @@ def parse_args():
                        help="Run specific phase (1-4), 0=all")
     parser.add_argument("--max-context", type=int, default=128,
                        help="Maximum context length to sweep")
-    parser.add_argument("--n-trajectories", type=int, default=30,
+    parser.add_argument("--n-trajectories", type=int, default=50,
                        help="Trajectories per context length for VOMC")
-    parser.add_argument("--generation-length", type=int, default=20,
+    parser.add_argument("--generation-length", type=int, default=40,
                        help="Tokens to generate per trajectory")
     parser.add_argument("--max-order", type=int, default=6,
                        help="Maximum Markov order to test")
     parser.add_argument("--n-clusters", type=int, default=32,
                        help="Number of VOMC states (clusters)")
-    parser.add_argument("--max-lookahead", type=int, default=8,
+    parser.add_argument("--max-lookahead", type=int, default=10,
                        help="Maximum planning lookahead")
-    parser.add_argument("--n-permutations", type=int, default=100,
+    parser.add_argument("--n-permutations", type=int, default=200,
                        help="Permutations for MI significance test")
-    parser.add_argument("--target-layers", type=str, default=None,
-                       help="Comma-separated layer indices (default: all)")
+    parser.add_argument("--target-layers", type=str, default="0,3,6,9,11",
+                       help="Comma-separated layer indices (default: 0,3,6,9,11)")
     parser.add_argument("--tensor-types", type=str, default="Q,K,V",
                        help="Tensor types to analyze (comma-separated)")
     return parser.parse_args()
@@ -124,8 +131,8 @@ def run_phase2(extractor, config, output_dir, logger, max_context=128):
     logger.info("PHASE 2: Context Window Sweep")
     logger.info("=" * 60)
 
-    # Determine context lengths
-    context_lengths = [c for c in [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    # Determine context lengths (drop 1 and 2 — too short for planning)
+    context_lengths = [c for c in [4, 8, 16, 32, 64, 128, 256]
                        if c <= max_context]
 
     sweeper = ContextSweeper(
@@ -134,7 +141,14 @@ def run_phase2(extractor, config, output_dir, logger, max_context=128):
         tensor_types=config.sweep.tensor_types,
     )
 
-    collection = sweeper.sweep_all(FACTUAL_PROMPTS)
+    # Use contextual ramp prompts — these are longer passages where each
+    # additional sentence adds constraining information, giving a real
+    # signal for how confidence and QKV states change with context.
+    sweep_prompts = [
+        {"prompt": p["full_text"], "expected": p["expected"]}
+        for p in CONTEXTUAL_RAMP_PROMPTS
+    ]
+    collection = sweeper.sweep_all(sweep_prompts)
 
     # Log summary
     for i, result in enumerate(collection.results):
@@ -174,7 +188,7 @@ def run_phase2(extractor, config, output_dir, logger, max_context=128):
 
 
 def run_phase3(extractor, collection, config, output_dir, logger,
-               n_trajectories=30, generation_length=20, max_order=6,
+               n_trajectories=50, generation_length=40, max_order=6,
                n_clusters=32, max_context=128):
     """
     Phase 3: VOMC construction.
@@ -197,8 +211,12 @@ def run_phase3(extractor, collection, config, output_dir, logger,
     context_lengths = [c for c in [4, 8, 16, 32, 64, 128]
                        if c <= max_context]
 
-    # Use a subset of narrative prompts as seeds
-    seed_prompts = NARRATIVE_PROMPTS[:5]
+    # Use structured narrative + long-range prompts as seeds
+    # These have built-in multi-step constraints (numbered lists, temporal
+    # sequences, pattern completions) that create detectable planning signals.
+    seed_prompts = STRUCTURED_NARRATIVE_PROMPTS[:6] + [
+        p["prompt"] for p in LONG_RANGE_PROMPTS[:4]
+    ]
     analyses = {}
 
     for ctx_len in context_lengths:
@@ -218,7 +236,9 @@ def run_phase3(extractor, collection, config, output_dir, logger,
                     break
 
                 input_ids = torch.tensor(tokens[:ctx_len])
-                temp = np.random.choice([0.5, 0.8, 1.0])
+                # Wider temperature range — connects to Kshitig/Radhika's
+                # finding that V states are most sensitive to temperature
+                temp = np.random.choice([0.3, 0.6, 0.9, 1.2])
 
                 trajectory = extractor.extract_generation_trajectory(
                     input_ids,
@@ -282,8 +302,8 @@ def run_phase3(extractor, collection, config, output_dir, logger,
 
 
 def run_phase4(extractor, config, output_dir, logger,
-               n_trajectories=30, generation_length=20,
-               max_lookahead=8, n_permutations=100, max_context=128):
+               n_trajectories=50, generation_length=40,
+               max_lookahead=10, n_permutations=200, max_context=128):
     """
     Phase 4: Planning detection via mutual information.
     For each context length, measure MI between current QKV state
@@ -301,10 +321,15 @@ def run_phase4(extractor, config, output_dir, logger,
         alpha=0.05,
     )
 
-    context_lengths = [c for c in [4, 16, 64, 128]
+    context_lengths = [c for c in [4, 8, 16, 32, 64, 128]
                        if c <= max_context]
 
-    seed_prompts = NARRATIVE_PROMPTS[:5]
+    # Use the same structured prompts as Phase 3 — these have strong
+    # multi-step dependencies (numbered lists, joke patterns, rhyme
+    # schemes, temporal sequences) that should produce detectable MI.
+    seed_prompts = STRUCTURED_NARRATIVE_PROMPTS[:6] + [
+        p["prompt"] for p in LONG_RANGE_PROMPTS[:4]
+    ]
     all_profiles = {}
 
     for ctx_len in context_lengths:
@@ -320,9 +345,11 @@ def run_phase4(extractor, config, output_dir, logger,
                 if len(trajectories) >= n_trajectories:
                     break
                 input_ids = torch.tensor(tokens[:ctx_len])
+                # Vary temperature across trajectories for diversity
+                temp = np.random.choice([0.3, 0.6, 0.9, 1.2])
                 traj = extractor.extract_generation_trajectory(
                     input_ids, n_steps=generation_length,
-                    temperature=0.8, tensor_type="V",
+                    temperature=temp, tensor_type="V",
                 )
                 trajectories.append(traj)
 
