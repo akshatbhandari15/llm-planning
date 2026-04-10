@@ -23,6 +23,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-prompts", type=int, default=8)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip plot generation and only save text/tabular outputs.",
+    )
+    parser.add_argument(
+        "--print-io",
+        action="store_true",
+        help="Print context input and top-token output at each step.",
+    )
+    parser.add_argument(
+        "--max-context-preview-chars",
+        type=int,
+        default=160,
+        help="Max characters shown for printed context previews.",
+    )
     return parser.parse_args()
 
 

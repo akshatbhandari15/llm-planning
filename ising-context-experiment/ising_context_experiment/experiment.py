@@ -53,6 +53,30 @@ def _token_id(tokenizer, text: str) -> int:
     return int(ids[0]) if ids else -1
 
 
+def _preview_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text.replace("\n", " ")
+    return text[: max_chars - 3].replace("\n", " ") + "..."
+
+
+def _print_step_io(row: Dict, max_preview_chars: int) -> None:
+    print(
+        "[IO]"
+        f" prompt={row['prompt_id']}"
+        f" dir={row['direction']}"
+        f" ctx={row['context_length']}"
+    )
+    print(f"  input : {_preview_text(row['context_text'], max_preview_chars)}")
+    print(f"  output: {row['top_tokens']}")
+    print(
+        "  stats :"
+        f" p_target={row['p_target']:.4f}"
+        f" p_comp={row['p_competitor']:.4f}"
+        f" margin={row['magnetization_margin']:.4f}"
+        f" H={row['entropy_bits']:.4f}"
+    )
+
+
 def _run_single_direction(
     probe: ModelProbe,
     prompt_id: int,
@@ -165,6 +189,11 @@ def run_bidirectional_experiment(args) -> None:
         stats = summarize_prompt_curves(prompt_rows)
         for row in prompt_rows:
             row.update(stats)
+            if args.print_io:
+                _print_step_io(
+                    row,
+                    max_preview_chars=args.max_context_preview_chars,
+                )
 
         all_rows.extend(prompt_rows)
         per_prompt_rows[prompt_id].extend(prompt_rows)
@@ -190,8 +219,12 @@ def run_bidirectional_experiment(args) -> None:
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 
-    generate_plots(df, args.output_dir)
+    if not args.no_plots:
+        generate_plots(df, args.output_dir)
 
     print(f"Saved observations: {csv_path}")
     print(f"Saved summary: {summary_path}")
-    print(f"Saved plots dir: {os.path.join(args.output_dir, 'plots')}")
+    if args.no_plots:
+        print("Skipped plots (--no-plots enabled)")
+    else:
+        print(f"Saved plots dir: {os.path.join(args.output_dir, 'plots')}")
