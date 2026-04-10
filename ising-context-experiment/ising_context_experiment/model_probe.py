@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -32,7 +32,7 @@ class ModelProbe:
 
     def _anchor_attention(
         self,
-        attentions: List[torch.Tensor],
+        attentions: Optional[List[Optional[torch.Tensor]]],
         input_ids: List[int],
         anchor_tokens: List[str],
     ) -> float:
@@ -57,7 +57,11 @@ class ModelProbe:
         if not anchor_positions:
             return 0.0
 
-        last_layer = attentions[-1][0]
+        valid_attentions = [layer for layer in attentions if layer is not None]
+        if not valid_attentions:
+            return 0.0
+
+        last_layer = valid_attentions[-1][0]
         mean_head = last_layer.mean(dim=0)
         last_query = mean_head[-1]
         scores = [float(last_query[pos].item()) for pos in anchor_positions]
